@@ -1,0 +1,687 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Cadence" />
+<meta name="theme-color" content="#0B0E14" />
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="apple-touch-icon" href="icon-180.png" />
+<link rel="icon" href="icon-192.png" />
+<title>Cadence</title>
+<style>
+  html, body { margin: 0; background: #0B0E14; -webkit-tap-highlight-color: transparent; }
+  #root { min-height: 100vh; }
+  #boot { color:#8A95A8; font-family: -apple-system, system-ui, sans-serif; display:flex; height:100vh; align-items:center; justify-content:center; }
+</style>
+</head>
+<body>
+<div id="root"><div id="boot">Chargement de Cadence…</div></div>
+
+<script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+<script src="https://unpkg.com/prop-types@15/prop-types.min.js" crossorigin></script>
+<script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.min.js" crossorigin></script>
+<script src="https://unpkg.com/@babel/standalone@7/babel.min.js" crossorigin></script>
+
+<script type="text/babel" data-presets="react">
+const { useState, useMemo, useEffect } = React;
+const {
+  ResponsiveContainer, AreaChart, Area, LineChart, Line, BarChart, Bar, ScatterChart, Scatter,
+  ComposedChart, XAxis, YAxis, ZAxis, Tooltip, CartesianGrid, ReferenceArea, ReferenceLine, Cell
+} = Recharts;
+
+
+/* ============================================================================
+   CADENCE v3 — Suivi de performance personnel
+   Bord · Training (Séances/Charges/VBT) · Nutrition (Calories/Hydra) · Compléments · Sources
+   Données locales (window.storage ; -> localStorage en prod). Prêt pour API.
+   ============================================================================ */
+
+const C = {
+  bg: "#0B0E14", panel: "#141925", panel2: "#1B2230", line: "#2A3344", lineSoft: "#212a3a",
+  text: "#E8ECF4", muted: "#8A95A8", faint: "#5C677D", gold: "#E5B567",
+  recovery: "#34D399", hrv: "#22D3EE", sleep: "#818CF8", strain: "#FBBF24", danger: "#F87171",
+  weight: "#E5B567", fat: "#F472B6", water: "#38BDF8", supp: "#A78BFA",
+  kcal: "#FB923C", prot: "#34D399", carb: "#FBBF24", lip: "#F472B6", vel: "#22D3EE",
+};
+const SPORTS = ["Boxe", "MMA", "Muay Thai", "JJB / Grappling", "Lutte", "Musculation", "Cardio / Course", "Mobilité", "Autre"];
+const SPORT_COLOR = { "Boxe": "#F87171", "MMA": "#FB923C", "Muay Thai": "#FBBF24", "JJB / Grappling": "#34D399", "Lutte": "#22D3EE", "Musculation": "#E5B567", "Cardio / Course": "#818CF8", "Mobilité": "#A78BFA", "Autre": "#8A95A8" };
+const EXERCISES = ["Squat", "Soulevé de terre", "Développé couché", "Développé militaire", "Tractions", "Rowing", "Hip thrust", "Fente", "Autre"];
+const WATER_GOAL = 3000, KCAL_GOAL = 2600, PROT_GOAL = 165;
+
+const todayStr = () => new Date().toISOString().slice(0, 10);
+const uid = () => Math.random().toString(36).slice(2, 10);
+const avg = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0);
+const fmtDate = (s) => new Date(s + "T00:00:00").toLocaleDateString("fr-FR", { day: "2-digit", month: "short" });
+const epley = (w, r) => Math.round(w * (1 + r / 30));
+function seeded(s) { let x = s; return () => { x = (x * 1664525 + 1013904223) % 4294967296; return x / 4294967296; }; }
+
+/* ---------- démo ---------- */
+function genDemo() {
+  const rnd = seeded(11); const daily = {}; let weight = 76.2, fat = 14.6, hrvB = 66; const t = new Date();
+  for (let i = 59; i >= 0; i--) {
+    const d = new Date(t); d.setDate(d.getDate() - i); const key = d.toISOString().slice(0, 10);
+    const dow = d.getDay(); const rest = dow === 0; const n = (a) => (rnd() - 0.5) * a;
+    weight -= 0.01 + n(0.18); fat -= 0.006 + n(0.07); hrvB += 0.04 + n(0.4);
+    const load = rest ? 0 : Math.max(0, (dow === 2 || dow === 4 ? 15 : 10) + n(5));
+    const hrv = Math.max(42, hrvB + (rest ? 5 : -load * 0.4) + n(8));
+    const rhr = Math.max(45, 52 + load * 0.22 + n(4));
+    const sleepH = +(7.2 + (rest ? 0.6 : 0) + n(1)).toFixed(1);
+    const sleepPerf = Math.round(Math.min(98, Math.max(58, 83 + n(15))));
+    const recovery = Math.round(Math.min(98, Math.max(25, 0.5 * sleepPerf + (hrv - 42) - load + (rest ? 8 : 0) + n(8))));
+    const kcal = Math.round((rest ? 2300 : 2750) + n(700));
+    daily[key] = {
+      hrv: Math.round(hrv), rhr: Math.round(rhr), recovery, sleepH, sleepPerf,
+      weight: +weight.toFixed(1), fat: +fat.toFixed(1),
+      waterMl: Math.round((rest ? 2200 : 2800) + n(900)),
+      supps: { whey: rnd() > 0.2, creatine: rnd() > 0.15, omega3: rnd() > 0.35, vitD: rnd() > 0.25, magnesium: rnd() > 0.4 },
+      meals: [
+        { id: uid(), name: "Petit-déj", kcal: Math.round(kcal * 0.28), p: 35, c: 55, f: 18 },
+        { id: uid(), name: "Déjeuner", kcal: Math.round(kcal * 0.38), p: 55, c: 70, f: 25 },
+        { id: uid(), name: "Dîner", kcal: Math.round(kcal * 0.34), p: 50, c: 60, f: 22 },
+      ],
+    };
+  }
+  const sessions = [];
+  for (let i = 28; i >= 0; i--) {
+    const d = new Date(t); d.setDate(d.getDate() - i); const dow = d.getDay(); if (dow === 0) continue;
+    const sport = dow === 1 ? "Boxe" : dow === 2 ? "Musculation" : dow === 3 ? "JJB / Grappling" : dow === 4 ? "Musculation" : dow === 5 ? "MMA" : "Cardio / Course";
+    sessions.push({ id: uid(), date: d.toISOString().slice(0, 10), sport, title: sport, duration: 60 + Math.round(rnd() * 40), rpe: 5 + Math.round(rnd() * 4), notes: "" });
+  }
+  const lifts = []; let sq = 90, bp = 65, dl = 110;
+  for (let i = 8; i >= 0; i--) {
+    const d = new Date(t); d.setDate(d.getDate() - i * 7); const ds = d.toISOString().slice(0, 10);
+    sq += 2.5; bp += 1.25; dl += 2.5;
+    lifts.push({ id: uid(), date: ds, exercise: "Squat", sets: [{ weight: sq, reps: 5 }, { weight: sq, reps: 5 }, { weight: sq, reps: 5 }] });
+    lifts.push({ id: uid(), date: ds, exercise: "Développé couché", sets: [{ weight: bp, reps: 5 }, { weight: bp, reps: 5 }] });
+  }
+  const vbt = []; let vsq = 80;
+  for (let i = 7; i >= 0; i--) {
+    const d = new Date(t); d.setDate(d.getDate() - i * 7); const ds = d.toISOString().slice(0, 10); vsq += 2.5;
+    [0.6, 0.75, 0.9].forEach((frac) => {
+      const charge = Math.round(vsq * frac / 2.5) * 2.5;
+      const vel = +(1.15 - frac * 0.85 + (rnd() - 0.5) * 0.05).toFixed(2);
+      vbt.push({ id: uid(), date: ds, exercise: "Squat", load: charge, velocity: vel });
+    });
+  }
+  return { daily, sessions, lifts, vbt, settings: { kcalGoal: KCAL_GOAL, protGoal: PROT_GOAL, waterGoal: WATER_GOAL } };
+}
+const DEFAULT_SUPPS = [
+  { id: "whey", name: "Whey", color: "#E5B567" }, { id: "creatine", name: "Créatine", color: "#34D399" },
+  { id: "omega3", name: "Oméga-3", color: "#22D3EE" }, { id: "vitD", name: "Vitamine D", color: "#FBBF24" },
+  { id: "magnesium", name: "Magnésium", color: "#A78BFA" },
+];
+
+const KEY = "cadence:v3";
+function load() { try { const r = localStorage.getItem(KEY); return r ? JSON.parse(r) : null; } catch (e) { return null; } }
+function save(s) { try { localStorage.setItem(KEY, JSON.stringify(s)); } catch (e) {} }
+
+/* ============================================================================ */
+function App() {
+  const [state, setState] = useState(null);
+  const [tab, setTab] = useState("dashboard");
+  const [suppDefs, setSuppDefs] = useState(DEFAULT_SUPPS);
+  const [trainSeg, setTrainSeg] = useState("sessions");
+  const [nutriSeg, setNutriSeg] = useState("calories");
+
+  useEffect(() => {
+    const s = load();
+    if (s?.daily) { setState({ settings: { kcalGoal: KCAL_GOAL, protGoal: PROT_GOAL, waterGoal: WATER_GOAL }, vbt: [], ...s }); setSuppDefs(s.suppDefs || DEFAULT_SUPPS); }
+    else setState(genDemo());
+  }, []);
+  useEffect(() => { if (state) save({ ...state, suppDefs }); }, [state, suppDefs]);
+  if (!state) return <Splash />;
+  const update = (fn) => setState((s) => fn({ ...s }));
+
+  const tabs = [["dashboard", "Bord"], ["training", "Training"], ["nutrition", "Nutrition"], ["supps", "Compléments"], ["sources", "Sources"]];
+
+  return (
+    <div style={{ background: C.bg, minHeight: "100vh", color: C.text, fontFamily: "Inter, system-ui, sans-serif" }}>
+      <Styles />
+      <div style={{ maxWidth: 1120, margin: "0 auto", padding: "22px 16px 92px" }}>
+        <header style={{ marginBottom: 16 }}>
+          <div className="disp" style={{ fontSize: 12, letterSpacing: 4, color: C.gold, fontWeight: 600 }}>CADENCE</div>
+          <h1 className="disp" style={{ margin: "2px 0 0", fontSize: 24, fontWeight: 700 }}>{tabs.find((t) => t[0] === tab)[1]}</h1>
+        </header>
+
+        {tab === "dashboard" && <Dashboard state={state} />}
+        {tab === "training" && (<>
+          <Segmented value={trainSeg} setValue={setTrainSeg} options={[["sessions", "Séances"], ["strength", "Charges"], ["vbt", "VBT"]]} />
+          {trainSeg === "sessions" && <Sessions state={state} update={update} />}
+          {trainSeg === "strength" && <Strength state={state} update={update} />}
+          {trainSeg === "vbt" && <VBT state={state} update={update} />}
+        </>)}
+        {tab === "nutrition" && (<>
+          <Segmented value={nutriSeg} setValue={setNutriSeg} options={[["calories", "Calories"], ["hydration", "Hydratation"]]} />
+          {nutriSeg === "calories" && <Nutrition state={state} update={update} />}
+          {nutriSeg === "hydration" && <Hydration state={state} update={update} />}
+        </>)}
+        {tab === "supps" && <Supplements state={state} update={update} suppDefs={suppDefs} setSuppDefs={setSuppDefs} />}
+        {tab === "sources" && <Sources state={state} setState={setState} setSuppDefs={setSuppDefs} />}
+      </div>
+
+      <nav style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: "rgba(11,14,20,0.92)", backdropFilter: "blur(12px)",
+        borderTop: `1px solid ${C.line}`, display: "flex", justifyContent: "center", gap: 2, padding: "8px 6px env(safe-area-inset-bottom)", zIndex: 40 }}>
+        {tabs.map(([id, label]) => (
+          <button key={id} onClick={() => setTab(id)} style={{ flex: "1 1 0", maxWidth: 120, background: "none", border: "none", cursor: "pointer",
+            padding: "6px 4px", color: tab === id ? C.gold : C.faint, display: "flex", flexDirection: "column", alignItems: "center", gap: 3,
+            fontSize: 10.5, fontWeight: tab === id ? 600 : 400 }}>
+            <NavIcon id={id} active={tab === id} /><span>{label}</span>
+          </button>
+        ))}
+      </nav>
+    </div>
+  );
+}
+
+/* ============================ DASHBOARD ============================ */
+function Dashboard({ state }) {
+  const [range, setRange] = useState(30);
+  const series = useMemo(() => {
+    const keys = Object.keys(state.daily).sort();
+    const rows = keys.map((k) => ({ date: k, ...state.daily[k], kcal: (state.daily[k].meals || []).reduce((a, m) => a + m.kcal, 0) }));
+    const loadByDate = {}; state.sessions.forEach((s) => { loadByDate[s.date] = (loadByDate[s.date] || 0) + s.rpe * s.duration / 10; });
+    rows.forEach((r) => { r.load = +(loadByDate[r.date] || 0).toFixed(1); });
+    return rows.map((r, i) => {
+      const a = avg(rows.slice(Math.max(0, i - 6), i + 1).map((x) => x.load));
+      const c = avg(rows.slice(Math.max(0, i - 27), i + 1).map((x) => x.load));
+      return { ...r, acwr: c > 0 ? +(a / c).toFixed(2) : 0 };
+    });
+  }, [state]);
+  const view = series.slice(-range); const today = series[series.length - 1] || {};
+  const hrvBase = avg(series.slice(-30).map((e) => e.hrv)) || 60;
+  const readiness = Math.round(Math.min(99, Math.max(1, 0.4 * today.recovery + 0.3 * today.sleepPerf + 0.2 * Math.min(100, today.hrv / hrvBase * 70 + 15) + 0.1 * (100 - Math.min(100, today.load * 4)))));
+  const delta = (k) => avg(series.slice(-7).map((e) => e[k])) - avg(series.slice(-14, -7).map((e) => e[k]));
+
+  return (<>
+    <section style={{ display: "grid", gap: 12, gridTemplateColumns: "minmax(200px,250px) 1fr", marginBottom: 12 }} className="rtop">
+      <Panel className="card" style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: 22 }}>
+        <Gauge value={readiness} />
+        <div style={{ marginTop: 12, fontSize: 12, color: C.muted, textAlign: "center", lineHeight: 1.5 }}>
+          {readiness >= 70 ? "Bonne fenêtre pour l'intensité." : readiness >= 45 ? "Charge modérée conseillée." : "Récup / technique aujourd'hui."}
+        </div>
+      </Panel>
+      <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))" }}>
+        <Tile label="HRV" unit="ms" value={today.hrv} color={C.hrv} delta={delta("hrv")} good="up" data={view.map((e) => e.hrv)} />
+        <Tile label="FC repos" unit="bpm" value={today.rhr} color={C.recovery} delta={delta("rhr")} good="down" data={view.map((e) => e.rhr)} />
+        <Tile label="Récup" unit="%" value={today.recovery} color={C.recovery} delta={delta("recovery")} good="up" data={view.map((e) => e.recovery)} />
+        <Tile label="Sommeil" unit="h" value={today.sleepH} color={C.sleep} delta={delta("sleepH")} good="up" data={view.map((e) => e.sleepH)} dec />
+        <Tile label="Poids" unit="kg" value={today.weight} color={C.weight} delta={delta("weight")} good="down" data={view.map((e) => e.weight)} dec />
+        <Tile label="Calories" unit="kcal" value={today.kcal} color={C.kcal} delta={delta("kcal")} good="up" data={view.map((e) => e.kcal)} />
+      </div>
+    </section>
+    <RangeSel range={range} setRange={setRange} />
+    <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit,minmax(320px,1fr))" }}>
+      <ChartPanel title="Récupération & HRV" subtitle="Système nerveux autonome">
+        <ResponsiveContainer width="100%" height={200}><ComposedChart data={view} margin={mg}>
+          <defs><linearGradient id="gr" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={C.recovery} stopOpacity={0.35} /><stop offset="100%" stopColor={C.recovery} stopOpacity={0} /></linearGradient></defs>
+          {Grid()}{Xaxis(view)}<YAxis yAxisId="l" {...axisP} domain={[0, 100]} /><YAxis yAxisId="r" orientation="right" {...axisP} domain={["dataMin-5", "dataMax+5"]} />{Tip()}
+          <Area yAxisId="l" type="monotone" dataKey="recovery" name="Récup (%)" stroke={C.recovery} strokeWidth={2} fill="url(#gr)" />
+          <Line yAxisId="r" type="monotone" dataKey="hrv" name="HRV (ms)" stroke={C.hrv} strokeWidth={2} dot={false} />
+        </ComposedChart></ResponsiveContainer>
+      </ChartPanel>
+      <ChartPanel title="Poids & composition" subtitle="Withings">
+        <ResponsiveContainer width="100%" height={200}><ComposedChart data={view} margin={mg}>
+          {Grid()}{Xaxis(view)}<YAxis yAxisId="l" {...axisP} domain={["dataMin-1", "dataMax+1"]} /><YAxis yAxisId="r" orientation="right" {...axisP} domain={["dataMin-2", "dataMax+2"]} />{Tip()}
+          <Line yAxisId="l" type="monotone" dataKey="weight" name="Poids (kg)" stroke={C.weight} strokeWidth={2} dot={false} />
+          <Line yAxisId="r" type="monotone" dataKey="fat" name="MG (%)" stroke={C.fat} strokeWidth={2} dot={false} strokeDasharray="4 3" />
+        </ComposedChart></ResponsiveContainer>
+      </ChartPanel>
+      <ChartPanel title="Charge & risque blessure" subtitle="Ratio aigu:chronique — zone sûre 0,8–1,3" full>
+        <ResponsiveContainer width="100%" height={220}><ComposedChart data={view} margin={mg}>
+          {Grid()}{Xaxis(view)}<YAxis yAxisId="l" {...axisP} /><YAxis yAxisId="r" orientation="right" {...axisP} domain={[0, 2]} />{Tip()}
+          <ReferenceArea yAxisId="r" y1={0.8} y2={1.3} fill={C.recovery} fillOpacity={0.08} /><ReferenceLine yAxisId="r" y={1.5} stroke={C.danger} strokeDasharray="3 3" strokeOpacity={0.5} />
+          <Bar yAxisId="l" dataKey="load" name="Charge" fill={C.strain} fillOpacity={0.4} radius={[2, 2, 0, 0]} />
+          <Line yAxisId="r" type="monotone" dataKey="acwr" name="ACWR" stroke={C.gold} strokeWidth={2.5} dot={false} />
+        </ComposedChart></ResponsiveContainer>
+        <p style={{ fontSize: 11.5, color: C.faint, marginTop: 6, lineHeight: 1.5 }}>Charge calculée automatiquement depuis tes séances (RPE × durée).</p>
+      </ChartPanel>
+    </div>
+  </>);
+}
+
+/* ============================ SÉANCES ============================ */
+function Sessions({ state, update }) {
+  const [modal, setModal] = useState(false);
+  const sorted = [...state.sessions].sort((a, b) => b.date.localeCompare(a.date));
+  const week = sorted.filter((s) => (Date.now() - new Date(s.date)) / 864e5 < 7);
+  const weekLoad = week.reduce((a, s) => a + s.rpe * s.duration / 10, 0);
+  const bySport = {}; sorted.filter((s) => (Date.now() - new Date(s.date)) / 864e5 < 30).forEach((s) => { bySport[s.sport] = (bySport[s.sport] || 0) + 1; });
+  const sportData = Object.entries(bySport).map(([sport, n]) => ({ sport, n }));
+  const del = (id) => update((s) => { s.sessions = s.sessions.filter((x) => x.id !== id); return s; });
+  return (<>
+    <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", marginBottom: 12 }}>
+      <Stat label="Séances / 7j" value={week.length} /><Stat label="Volume / 7j" value={week.reduce((a, s) => a + s.duration, 0)} unit="min" />
+      <Stat label="Charge / 7j" value={Math.round(weekLoad)} unit="UA" />
+      <button className="btn" onClick={() => setModal(true)} style={{ ...btnPrimary, minHeight: 84, fontSize: 15 }}>+ Nouvelle séance</button>
+    </div>
+    {sportData.length > 0 && (<ChartPanel title="Répartition par discipline" subtitle="30 derniers jours">
+      <ResponsiveContainer width="100%" height={Math.max(120, sportData.length * 34)}><BarChart data={sportData} layout="vertical" margin={{ left: 10, right: 20, top: 4, bottom: 4 }}>
+        <XAxis type="number" {...axisP} allowDecimals={false} /><YAxis type="category" dataKey="sport" {...axisP} width={110} tick={{ fill: C.muted, fontSize: 11 }} />{Tip()}
+        <Bar dataKey="n" name="Séances" radius={[0, 4, 4, 0]}>{sportData.map((d, i) => <Cell key={i} fill={SPORT_COLOR[d.sport] || C.gold} />)}</Bar>
+      </BarChart></ResponsiveContainer></ChartPanel>)}
+    <ListTitle>Historique</ListTitle>
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      {sorted.map((s) => (<Panel key={s.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: 13 }}>
+        <span style={{ width: 4, alignSelf: "stretch", borderRadius: 4, background: SPORT_COLOR[s.sport] || C.gold }} />
+        <div style={{ flex: 1, minWidth: 0 }}><div style={{ fontWeight: 600, fontSize: 14 }}>{s.title || s.sport}</div>
+          <div className="mono" style={{ fontSize: 12, color: C.faint }}>{fmtDate(s.date)} · {s.duration} min · RPE {s.rpe}{s.notes ? " · " + s.notes : ""}</div></div>
+        <span className="mono" style={{ fontSize: 13, color: C.gold }}>{Math.round(s.rpe * s.duration / 10)} UA</span>
+        <button onClick={() => del(s.id)} style={delBtn}>✕</button></Panel>))}
+      {sorted.length === 0 && <Empty text="Aucune séance." />}
+    </div>
+    {modal && <SessionModal onClose={() => setModal(false)} onSave={(sess) => { update((s) => { s.sessions = [...s.sessions, { ...sess, id: uid() }]; return s; }); setModal(false); }} />}
+  </>);
+}
+function SessionModal({ onClose, onSave }) {
+  const [f, setF] = useState({ date: todayStr(), sport: "Boxe", title: "", duration: 60, rpe: 7, notes: "" });
+  return (<Overlay onClose={onClose}><ModalTitle>Nouvelle séance</ModalTitle>
+    <Field label="Date"><input type="date" value={f.date} onChange={(e) => setF({ ...f, date: e.target.value })} style={inp} /></Field>
+    <Field label="Discipline"><select value={f.sport} onChange={(e) => setF({ ...f, sport: e.target.value })} style={inp}>{SPORTS.map((s) => <option key={s}>{s}</option>)}</select></Field>
+    <Field label="Titre / focus (optionnel)"><input value={f.title} placeholder="ex : sparring, technique" onChange={(e) => setF({ ...f, title: e.target.value })} style={inp} /></Field>
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+      <Field label="Durée (min)"><input type="number" value={f.duration} onChange={(e) => setF({ ...f, duration: +e.target.value })} style={inp} /></Field>
+      <Field label="RPE (1–10)"><input type="number" min="1" max="10" value={f.rpe} onChange={(e) => setF({ ...f, rpe: +e.target.value })} style={inp} /></Field>
+    </div>
+    <Field label="Notes"><textarea value={f.notes} rows={2} onChange={(e) => setF({ ...f, notes: e.target.value })} style={{ ...inp, resize: "vertical", fontFamily: "Inter" }} /></Field>
+    <ModalActions onClose={onClose} onSave={() => onSave(f)} />
+  </Overlay>);
+}
+
+/* ============================ CHARGES ============================ */
+function Strength({ state, update }) {
+  const [modal, setModal] = useState(false);
+  const exercises = [...new Set(state.lifts.map((l) => l.exercise))];
+  const [sel, setSel] = useState(exercises[0] || "Squat");
+  const data = useMemo(() => state.lifts.filter((l) => l.exercise === sel).sort((a, b) => a.date.localeCompare(b.date))
+    .map((l) => ({ date: l.date, e1rm: Math.max(...l.sets.map((s) => epley(s.weight, s.reps))) })), [state.lifts, sel]);
+  const pr = data.length ? Math.max(...data.map((d) => d.e1rm)) : 0;
+  const first = data[0]?.e1rm, lastV = data[data.length - 1]?.e1rm; const prog = first ? Math.round((lastV - first) / first * 100) : 0;
+  const del = (id) => update((s) => { s.lifts = s.lifts.filter((x) => x.id !== id); return s; });
+  return (<>
+    <Chips items={exercises} sel={sel} setSel={setSel} extra={<button className="btn" onClick={() => setModal(true)} style={{ ...btnPrimary, padding: "7px 14px" }}>+ Perf</button>} />
+    {data.length > 0 ? (<>
+      <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", marginBottom: 12 }}>
+        <Stat label="1RM estimé (PR)" value={pr} unit="kg" hl /><Stat label="Actuel" value={lastV} unit="kg" /><Stat label="Progression" value={(prog >= 0 ? "+" : "") + prog} unit="%" />
+      </div>
+      <ChartPanel title={`Progression — ${sel}`} subtitle="1RM estimé (Epley)" full>
+        <ResponsiveContainer width="100%" height={220}><ComposedChart data={data} margin={mg}>
+          <defs><linearGradient id="g1" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={C.gold} stopOpacity={0.3} /><stop offset="100%" stopColor={C.gold} stopOpacity={0} /></linearGradient></defs>
+          {Grid()}{Xaxis(data)}<YAxis {...axisP} domain={["dataMin-5", "dataMax+5"]} />{Tip()}
+          <Area type="monotone" dataKey="e1rm" name="1RM est. (kg)" stroke={C.gold} strokeWidth={2.5} fill="url(#g1)" />
+        </ComposedChart></ResponsiveContainer></ChartPanel>
+    </>) : <Empty text="Aucune performance pour cet exercice." />}
+    <ListTitle>Journal</ListTitle>
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      {state.lifts.filter((l) => l.exercise === sel).sort((a, b) => b.date.localeCompare(a.date)).map((l) => (
+        <Panel key={l.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: 13 }}>
+          <div style={{ flex: 1 }}><div style={{ fontWeight: 600, fontSize: 14 }}>{l.exercise}</div>
+            <div className="mono" style={{ fontSize: 12, color: C.faint }}>{fmtDate(l.date)} · {l.sets.map((s) => `${s.weight}×${s.reps}`).join("  ")}</div></div>
+          <span className="mono" style={{ fontSize: 13, color: C.gold }}>{Math.max(...l.sets.map((s) => epley(s.weight, s.reps)))} kg</span>
+          <button onClick={() => del(l.id)} style={delBtn}>✕</button></Panel>))}
+    </div>
+    {modal && <LiftModal onClose={() => setModal(false)} onSave={(lift) => { update((s) => { s.lifts = [...s.lifts, { ...lift, id: uid() }]; return s; }); setModal(false); setSel(lift.exercise); }} />}
+  </>);
+}
+function LiftModal({ onClose, onSave }) {
+  const [ex, setEx] = useState("Squat"); const [custom, setCustom] = useState(""); const [date, setDate] = useState(todayStr());
+  const [sets, setSets] = useState([{ weight: 60, reps: 5 }]);
+  const upd = (i, k, v) => setSets(sets.map((s, j) => j === i ? { ...s, [k]: +v } : s));
+  return (<Overlay onClose={onClose}><ModalTitle>Ajouter une performance</ModalTitle>
+    <Field label="Exercice"><select value={ex} onChange={(e) => setEx(e.target.value)} style={inp}>{EXERCISES.map((x) => <option key={x}>{x}</option>)}</select></Field>
+    {ex === "Autre" && <Field label="Nom"><input value={custom} onChange={(e) => setCustom(e.target.value)} style={inp} /></Field>}
+    <Field label="Date"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={inp} /></Field>
+    <Field label="Séries (charge × reps)"><div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      {sets.map((s, i) => (<div key={i} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <input type="number" value={s.weight} onChange={(e) => upd(i, "weight", e.target.value)} style={{ ...inp, flex: 1 }} placeholder="kg" />
+        <span style={{ color: C.faint }}>×</span><input type="number" value={s.reps} onChange={(e) => upd(i, "reps", e.target.value)} style={{ ...inp, flex: 1 }} placeholder="reps" />
+        {sets.length > 1 && <button onClick={() => setSets(sets.filter((_, j) => j !== i))} style={delBtn}>✕</button>}</div>))}
+      <button className="btn" onClick={() => setSets([...sets, { ...sets[sets.length - 1] }])} style={{ ...btnStyle, fontSize: 12 }}>+ Série</button>
+    </div></Field>
+    <ModalActions onClose={onClose} onSave={() => onSave({ exercise: ex === "Autre" ? (custom || "Autre") : ex, date, sets })} />
+  </Overlay>);
+}
+
+/* ============================ VBT (Vitruve) ============================ */
+function VBT({ state, update }) {
+  const [modal, setModal] = useState(false);
+  const vbt = state.vbt || [];
+  const exercises = [...new Set(vbt.map((v) => v.exercise))];
+  const [sel, setSel] = useState(exercises[0] || "Squat");
+  const rows = vbt.filter((v) => v.exercise === sel);
+  const prog = useMemo(() => {
+    const byDate = {}; rows.forEach((v) => { (byDate[v.date] = byDate[v.date] || []).push(v); });
+    return Object.entries(byDate).sort((a, b) => a[0].localeCompare(b[0])).map(([date, arr]) => ({
+      date, vel: +Math.max(...arr.map((x) => x.velocity)).toFixed(2),
+    }));
+  }, [rows]);
+  const profile = rows.map((v) => ({ load: v.load, velocity: v.velocity }));
+  const lastVel = prog[prog.length - 1]?.vel, firstVel = prog[0]?.vel;
+  const del = (id) => update((s) => { s.vbt = (s.vbt || []).filter((x) => x.id !== id); return s; });
+  return (<>
+    <Panel style={{ marginBottom: 12, padding: 13, fontSize: 12.5, color: C.muted, lineHeight: 1.6, borderColor: C.vel + "55" }}>
+      Données de ton <strong style={{ color: C.vel }}>Vitruve VBT</strong> : vélocité concentrique moyenne par charge.
+      Importe l'export CSV depuis l'app Vitruve (onglet <strong>Sources</strong>) ou saisis à la main.
+    </Panel>
+    {exercises.length > 0 ? (<>
+      <Chips items={exercises} sel={sel} setSel={setSel} extra={<button className="btn" onClick={() => setModal(true)} style={{ ...btnPrimary, padding: "7px 14px" }}>+ Rep</button>} />
+      <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit,minmax(140px,1fr))", marginBottom: 12 }}>
+        <Stat label="Meilleure vélocité" value={prog.length ? Math.max(...prog.map((p) => p.vel)).toFixed(2) : "—"} unit="m/s" hl />
+        <Stat label="Dernière" value={lastVel ?? "—"} unit="m/s" />
+        <Stat label="Évolution" value={firstVel ? ((lastVel - firstVel >= 0 ? "+" : "") + (lastVel - firstVel).toFixed(2)) : "—"} unit="m/s" />
+      </div>
+      <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit,minmax(320px,1fr))" }}>
+        <ChartPanel title={`Vélocité — ${sel}`} subtitle="Vélocité concentrique max par séance">
+          <ResponsiveContainer width="100%" height={200}><LineChart data={prog} margin={mg}>
+            {Grid()}{Xaxis(prog)}<YAxis {...axisP} domain={["dataMin-0.1", "dataMax+0.1"]} />{Tip()}
+            <Line type="monotone" dataKey="vel" name="Vélocité (m/s)" stroke={C.vel} strokeWidth={2.5} dot={{ r: 3 }} />
+          </LineChart></ResponsiveContainer></ChartPanel>
+        <ChartPanel title="Profil charge–vitesse" subtitle="Plus la charge monte, plus la vélocité baisse">
+          <ResponsiveContainer width="100%" height={200}><ScatterChart margin={{ top: 8, right: 10, left: -10, bottom: 4 }}>
+            {Grid()}<XAxis type="number" dataKey="load" name="Charge" unit="kg" {...axisP} domain={["dataMin-5", "dataMax+5"]} />
+            <YAxis type="number" dataKey="velocity" name="Vélocité" unit="m/s" {...axisP} domain={[0, "dataMax+0.1"]} /><ZAxis range={[60, 60]} />
+            <Tooltip cursor={{ strokeDasharray: "3 3" }} contentStyle={tipStyle} />
+            <Scatter data={profile} fill={C.vel} fillOpacity={0.75} />
+          </ScatterChart></ResponsiveContainer></ChartPanel>
+      </div>
+      <ListTitle>Reps enregistrées</ListTitle>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {rows.sort((a, b) => b.date.localeCompare(a.date)).map((v) => (<Panel key={v.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: 13 }}>
+          <div style={{ flex: 1 }}><div style={{ fontWeight: 600, fontSize: 14 }}>{v.exercise}</div>
+            <div className="mono" style={{ fontSize: 12, color: C.faint }}>{fmtDate(v.date)} · {v.load} kg</div></div>
+          <span className="mono" style={{ fontSize: 14, color: C.vel }}>{v.velocity} m/s</span>
+          <button onClick={() => del(v.id)} style={delBtn}>✕</button></Panel>))}
+      </div>
+    </>) : <Empty text="Aucune donnée VBT. Importe ton export Vitruve ou ajoute une rep." />}
+    {modal && <VbtModal onClose={() => setModal(false)} onSave={(r) => { update((s) => { s.vbt = [...(s.vbt || []), { ...r, id: uid() }]; return s; }); setModal(false); setSel(r.exercise); }} />}
+  </>);
+}
+function VbtModal({ onClose, onSave }) {
+  const [f, setF] = useState({ date: todayStr(), exercise: "Squat", load: 80, velocity: 0.6 });
+  return (<Overlay onClose={onClose}><ModalTitle>Ajouter une rep VBT</ModalTitle>
+    <Field label="Date"><input type="date" value={f.date} onChange={(e) => setF({ ...f, date: e.target.value })} style={inp} /></Field>
+    <Field label="Exercice"><select value={f.exercise} onChange={(e) => setF({ ...f, exercise: e.target.value })} style={inp}>{EXERCISES.map((x) => <option key={x}>{x}</option>)}</select></Field>
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+      <Field label="Charge (kg)"><input type="number" value={f.load} onChange={(e) => setF({ ...f, load: +e.target.value })} style={inp} /></Field>
+      <Field label="Vélocité moy. (m/s)"><input type="number" step="0.01" value={f.velocity} onChange={(e) => setF({ ...f, velocity: +e.target.value })} style={inp} /></Field>
+    </div>
+    <ModalActions onClose={onClose} onSave={() => onSave(f)} />
+  </Overlay>);
+}
+
+/* ============================ NUTRITION / CALORIES ============================ */
+function Nutrition({ state, update }) {
+  const today = todayStr(); const [modal, setModal] = useState(false);
+  const meals = state.daily[today]?.meals || [];
+  const goal = state.settings?.kcalGoal || KCAL_GOAL; const pGoal = state.settings?.protGoal || PROT_GOAL;
+  const tot = meals.reduce((a, m) => ({ kcal: a.kcal + m.kcal, p: a.p + (m.p || 0), c: a.c + (m.c || 0), f: a.f + (m.f || 0) }), { kcal: 0, p: 0, c: 0, f: 0 });
+  const keys = Object.keys(state.daily).sort().slice(-14);
+  const hist = keys.map((k) => ({ date: k, kcal: (state.daily[k].meals || []).reduce((a, m) => a + m.kcal, 0) }));
+  const pct = Math.min(100, Math.round(tot.kcal / goal * 100));
+  const macro = [{ name: "Protéines", g: tot.p, color: C.prot, ref: pGoal }, { name: "Glucides", g: tot.c, color: C.carb, ref: 320 }, { name: "Lipides", g: tot.f, color: C.lip, ref: 90 }];
+  const addMeal = (m) => update((s) => { const d = s.daily[today] || {}; s.daily = { ...s.daily, [today]: { ...d, meals: [...(d.meals || []), { ...m, id: uid() }] } }; return s; });
+  const delMeal = (id) => update((s) => { const d = s.daily[today] || {}; s.daily = { ...s.daily, [today]: { ...d, meals: (d.meals || []).filter((m) => m.id !== id) } }; return s; });
+  return (<>
+    <Panel className="card" style={{ display: "flex", gap: 20, alignItems: "center", marginBottom: 12, flexWrap: "wrap" }}>
+      <Ring value={pct} color={pct > 105 ? C.danger : C.kcal} center={<><span className="mono" style={{ fontSize: 24, fontWeight: 700 }}>{tot.kcal}</span><span style={{ fontSize: 10, color: C.muted }}>/ {goal} kcal</span></>} />
+      <div style={{ flex: 1, minWidth: 180 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 8 }}>
+          <span style={{ color: C.muted }}>Restant</span><span className="mono" style={{ color: goal - tot.kcal < 0 ? C.danger : C.recovery }}>{goal - tot.kcal} kcal</span></div>
+        {macro.map((m) => (<div key={m.name} style={{ marginBottom: 8 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 3 }}>
+            <span style={{ color: C.muted }}>{m.name}</span><span className="mono" style={{ color: m.color }}>{m.g} g</span></div>
+          <div style={{ height: 5, background: C.lineSoft, borderRadius: 4, overflow: "hidden" }}>
+            <div style={{ width: Math.min(100, m.g / m.ref * 100) + "%", height: "100%", background: m.color }} /></div></div>))}
+        <button className="btn" onClick={() => setModal(true)} style={{ ...btnPrimary, width: "100%", marginTop: 6 }}>+ Ajouter un aliment</button>
+      </div>
+    </Panel>
+    <ChartPanel title="Apport calorique" subtitle="14 derniers jours · ligne = objectif" full>
+      <ResponsiveContainer width="100%" height={200}><BarChart data={hist} margin={mg}>
+        {Grid()}{Xaxis(hist)}<YAxis {...axisP} />{Tip()}<ReferenceLine y={goal} stroke={C.kcal} strokeDasharray="4 4" strokeOpacity={0.6} />
+        <Bar dataKey="kcal" name="kcal" radius={[3, 3, 0, 0]}>{hist.map((d, i) => <Cell key={i} fill={d.kcal > goal * 1.05 ? C.danger : C.kcal} fillOpacity={0.55} />)}</Bar>
+      </BarChart></ResponsiveContainer></ChartPanel>
+    <ListTitle>Aujourd'hui</ListTitle>
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      {meals.map((m) => (<Panel key={m.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: 13 }}>
+        <div style={{ flex: 1 }}><div style={{ fontWeight: 600, fontSize: 14 }}>{m.name}</div>
+          <div className="mono" style={{ fontSize: 12, color: C.faint }}>P {m.p || 0} · G {m.c || 0} · L {m.f || 0}</div></div>
+        <span className="mono" style={{ fontSize: 13, color: C.kcal }}>{m.kcal} kcal</span><button onClick={() => delMeal(m.id)} style={delBtn}>✕</button></Panel>))}
+      {meals.length === 0 && <Empty text="Aucun repas enregistré aujourd'hui." />}
+    </div>
+    {modal && <MealModal onClose={() => setModal(false)} onSave={(m) => { addMeal(m); setModal(false); }} />}
+  </>);
+}
+function MealModal({ onClose, onSave }) {
+  const [f, setF] = useState({ name: "", kcal: 0, p: 0, c: 0, f: 0 });
+  return (<Overlay onClose={onClose}><ModalTitle>Ajouter un aliment</ModalTitle>
+    <Field label="Nom"><input value={f.name} placeholder="ex : Poulet riz" onChange={(e) => setF({ ...f, name: e.target.value })} style={inp} /></Field>
+    <Field label="Calories (kcal)"><input type="number" value={f.kcal} onChange={(e) => setF({ ...f, kcal: +e.target.value })} style={inp} /></Field>
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+      <Field label="Prot. (g)"><input type="number" value={f.p} onChange={(e) => setF({ ...f, p: +e.target.value })} style={inp} /></Field>
+      <Field label="Gluc. (g)"><input type="number" value={f.c} onChange={(e) => setF({ ...f, c: +e.target.value })} style={inp} /></Field>
+      <Field label="Lip. (g)"><input type="number" value={f.f} onChange={(e) => setF({ ...f, f: +e.target.value })} style={inp} /></Field>
+    </div>
+    <ModalActions onClose={onClose} onSave={() => onSave(f)} />
+  </Overlay>);
+}
+
+/* ============================ HYDRATATION ============================ */
+function Hydration({ state, update }) {
+  const today = todayStr(); const cur = state.daily[today]?.waterMl || 0;
+  const keys = Object.keys(state.daily).sort().slice(-14); const data = keys.map((k) => ({ date: k, ml: state.daily[k].waterMl || 0 }));
+  const add = (ml) => update((s) => { const d = s.daily[today] || {}; s.daily = { ...s.daily, [today]: { ...d, waterMl: Math.max(0, (d.waterMl || 0) + ml) } }; return s; });
+  const pct = Math.min(100, Math.round(cur / WATER_GOAL * 100));
+  return (<>
+    <Panel className="card" style={{ display: "flex", gap: 20, alignItems: "center", marginBottom: 12, flexWrap: "wrap" }}>
+      <Ring value={pct} color={C.water} center={<><span className="mono" style={{ fontSize: 26, fontWeight: 700 }}>{(cur / 1000).toFixed(1)}</span><span style={{ fontSize: 11, color: C.muted }}>/ {WATER_GOAL / 1000} L</span></>} />
+      <div style={{ flex: 1, minWidth: 180 }}>
+        <div style={{ fontSize: 13, color: C.muted, marginBottom: 10 }}>Objectif du jour : {pct}%</div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {[250, 500, 750].map((ml) => <button key={ml} className="btn" onClick={() => add(ml)} style={{ ...btnStyle, flex: 1, minWidth: 70 }}>+{ml} ml</button>)}
+          <button className="btn" onClick={() => add(-250)} style={{ ...btnStyle, color: C.faint }}>−250</button></div>
+        <div style={{ fontSize: 12, color: C.faint, marginTop: 10 }}>Moy. 7 j : {(avg(data.slice(-7).map((d) => d.ml)) / 1000).toFixed(1)} L / jour</div>
+      </div>
+    </Panel>
+    <ChartPanel title="Hydratation" subtitle="14 derniers jours · ligne = objectif" full>
+      <ResponsiveContainer width="100%" height={200}><BarChart data={data} margin={mg}>
+        {Grid()}{Xaxis(data)}<YAxis {...axisP} tickFormatter={(v) => v / 1000 + "L"} />{Tip()}<ReferenceLine y={WATER_GOAL} stroke={C.water} strokeDasharray="4 4" strokeOpacity={0.6} />
+        <Bar dataKey="ml" name="Eau (ml)" radius={[3, 3, 0, 0]}>{data.map((d, i) => <Cell key={i} fill={d.ml >= WATER_GOAL ? C.recovery : C.water} fillOpacity={0.55} />)}</Bar>
+      </BarChart></ResponsiveContainer></ChartPanel>
+  </>);
+}
+
+/* ============================ COMPLÉMENTS ============================ */
+function Supplements({ state, update, suppDefs, setSuppDefs }) {
+  const today = todayStr(); const todaySupps = state.daily[today]?.supps || {};
+  const toggle = (id) => update((s) => { const d = s.daily[today] || {}; const sp = { ...(d.supps || {}) }; sp[id] = !sp[id]; s.daily = { ...s.daily, [today]: { ...d, supps: sp } }; return s; });
+  const keys = Object.keys(state.daily).sort().slice(-30);
+  const adherence = keys.map((k) => { const sp = state.daily[k].supps || {}; return { date: k, pct: Math.round(suppDefs.filter((d) => sp[d.id]).length / suppDefs.length * 100) }; });
+  const perSupp = suppDefs.map((d) => { const days = keys.map((k) => (state.daily[k].supps || {})[d.id]); let streak = 0; for (let i = days.length - 1; i >= 0; i--) { if (days[i]) streak++; else break; } return { ...d, rate: Math.round(days.filter(Boolean).length / keys.length * 100), streak }; });
+  const [newName, setNewName] = useState("");
+  return (<>
+    <Panel className="card" style={{ marginBottom: 12 }}><div className="disp" style={{ fontSize: 15, fontWeight: 600, marginBottom: 12 }}>Aujourd'hui</div>
+      <div style={{ display: "grid", gap: 10, gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))" }}>
+        {suppDefs.map((d) => { const on = todaySupps[d.id]; return (
+          <button key={d.id} onClick={() => toggle(d.id)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 14px", cursor: "pointer", background: on ? C.panel2 : "transparent", border: `1px solid ${on ? d.color : C.line}`, borderRadius: 10, color: C.text, textAlign: "left" }}>
+            <span style={{ width: 22, height: 22, borderRadius: 6, flexShrink: 0, border: `2px solid ${on ? d.color : C.faint}`, background: on ? d.color : "transparent", display: "flex", alignItems: "center", justifyContent: "center", color: C.bg, fontSize: 14, fontWeight: 700 }}>{on ? "✓" : ""}</span>
+            <span style={{ fontSize: 14, fontWeight: 500 }}>{d.name}</span></button>); })}
+      </div></Panel>
+    <ChartPanel title="Assiduité globale" subtitle="% des compléments pris par jour · 30 j" full>
+      <ResponsiveContainer width="100%" height={190}><AreaChart data={adherence} margin={mg}>
+        <defs><linearGradient id="gs" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={C.supp} stopOpacity={0.4} /><stop offset="100%" stopColor={C.supp} stopOpacity={0} /></linearGradient></defs>
+        {Grid()}{Xaxis(adherence)}<YAxis {...axisP} domain={[0, 100]} tickFormatter={(v) => v + "%"} />{Tip()}
+        <Area type="monotone" dataKey="pct" name="Assiduité (%)" stroke={C.supp} strokeWidth={2.5} fill="url(#gs)" />
+      </AreaChart></ResponsiveContainer></ChartPanel>
+    <ListTitle>Détail (30 j)</ListTitle>
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      {perSupp.map((d) => (<Panel key={d.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: 13 }}>
+        <span style={{ width: 10, height: 10, borderRadius: 10, background: d.color, flexShrink: 0 }} />
+        <span style={{ flex: 1, fontWeight: 500, fontSize: 14 }}>{d.name}</span>
+        <span className="mono" style={{ fontSize: 12, color: C.muted }}>🔥 {d.streak}j</span>
+        <div style={{ width: 80, height: 6, background: C.lineSoft, borderRadius: 4, overflow: "hidden" }}><div style={{ width: d.rate + "%", height: "100%", background: d.color }} /></div>
+        <span className="mono" style={{ fontSize: 13, color: C.gold, width: 38, textAlign: "right" }}>{d.rate}%</span>
+        <button onClick={() => setSuppDefs(suppDefs.filter((s) => s.id !== d.id))} style={delBtn}>✕</button></Panel>))}
+    </div>
+    <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+      <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="Ajouter un complément…" style={{ ...inp, flex: 1 }} />
+      <button className="btn" onClick={() => { if (newName.trim()) { setSuppDefs([...suppDefs, { id: uid(), name: newName.trim(), color: C.supp }]); setNewName(""); } }} style={btnPrimary}>Ajouter</button>
+    </div>
+  </>);
+}
+
+/* ============================ SOURCES / CONNEXIONS ============================ */
+function Sources({ state, setState, setSuppDefs }) {
+  const exportCSV = () => {
+    const keys = Object.keys(state.daily).sort();
+    const rows = keys.map((k) => { const d = state.daily[k]; return { date: k, hrv: d.hrv, rhr: d.rhr, recovery: d.recovery, sleepH: d.sleepH, sleepPerf: d.sleepPerf, weight: d.weight, fat: d.fat, waterMl: d.waterMl, kcal: (d.meals || []).reduce((a, m) => a + m.kcal, 0) }; });
+    const head = Object.keys(rows[0]).join(","); const body = rows.map((r) => Object.values(r).join(",")).join("\n");
+    const blob = new Blob([head + "\n" + body], { type: "text/csv" }); const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href = url; a.download = "cadence-export.csv"; a.click(); URL.revokeObjectURL(url);
+  };
+  const reset = () => { if (confirm("Réinitialiser avec les données de démo ?")) setState(genDemo()); };
+  const backup = () => {
+    const data = localStorage.getItem(KEY) || JSON.stringify(state);
+    const blob = new Blob([data], { type: "application/json" }); const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href = url; a.download = "cadence-backup.json"; a.click(); URL.revokeObjectURL(url);
+  };
+  const restore = (e) => {
+    const file = e.target.files[0]; if (!file) return; const r = new FileReader();
+    r.onload = () => { try { const d = JSON.parse(r.result); if (d.daily) { setState(d); if (d.suppDefs) setSuppDefs(d.suppDefs); alert("Sauvegarde restaurée."); } else alert("Fichier invalide."); } catch (err) { alert("Fichier illisible."); } };
+    r.readAsText(file);
+  };
+  const sources = [
+    { name: "Whoop", color: C.recovery, status: "Import CSV", note: "API officielle gratuite (OAuth). Connexion temps réel = étape backend. Pour l'instant : export depuis l'app Whoop." },
+    { name: "Withings", color: C.weight, status: "Import CSV", note: "API publique gratuite (OAuth). Poids & composition. Connexion temps réel = étape backend." },
+    { name: "Vitruve VBT", color: C.vel, status: "Import CSV", note: "API réservée aux abonnements pro/équipe. Pour un usage perso : export CSV en masse depuis l'app Vitruve." },
+  ];
+  return (<>
+    <Panel style={{ marginBottom: 14, padding: 15, fontSize: 13, color: C.muted, lineHeight: 1.6 }}>
+      Tes données restent <strong style={{ color: C.text }}>sur ton appareil</strong>. Les connexions temps réel (Whoop, Withings)
+      nécessitent un petit serveur — voir le guide de déploiement. En attendant, importe/exporte en CSV.
+    </Panel>
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      {sources.map((s) => (<Panel key={s.name} style={{ padding: 15 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+          <span style={{ width: 9, height: 9, borderRadius: 9, background: s.color }} />
+          <span className="disp" style={{ fontWeight: 600, fontSize: 15, flex: 1 }}>{s.name}</span>
+          <span style={{ fontSize: 11, padding: "3px 10px", borderRadius: 12, border: `1px solid ${C.line}`, color: C.muted }}>{s.status}</span>
+        </div>
+        <div style={{ fontSize: 12.5, color: C.faint, lineHeight: 1.5 }}>{s.note}</div>
+      </Panel>))}
+    </div>
+    <ListTitle>Sauvegarde</ListTitle>
+    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+      <button className="btn" onClick={backup} style={btnPrimary}>Sauvegarder (fichier)</button>
+      <label className="btn" style={{ ...btnStyle, display: "inline-flex", alignItems: "center" }}>Restaurer<input type="file" accept="application/json" onChange={restore} style={{ display: "none" }} /></label>
+      <button className="btn" onClick={exportCSV} style={btnStyle}>Export CSV</button>
+      <button className="btn" onClick={reset} style={{ ...btnStyle, color: C.danger, borderColor: C.danger + "55" }}>Réinitialiser</button>
+    </div>
+    <p style={{ fontSize: 11.5, color: C.faint, marginTop: 14, lineHeight: 1.6 }}>
+      Note iOS : une fois ajoutée à l'écran d'accueil, l'app fonctionne hors-ligne. iOS peut vider le stockage après ~7 jours sans ouvrir l'app : pense à \"Sauvegarder (fichier)\" de temps en temps, et \"Restaurer\" si besoin.
+    </p>
+  </>);
+}
+
+/* ============================ COMPOSANTS PARTAGÉS ============================ */
+function Splash() { return <div style={{ background: C.bg, color: C.muted, minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Inter" }}>Chargement…</div>; }
+function Panel({ children, style, className }) { return <div className={className} style={{ background: C.panel, border: `1px solid ${C.line}`, borderRadius: 14, padding: 16, ...style }}>{children}</div>; }
+function ChartPanel({ title, subtitle, children, full }) {
+  return (<Panel className="card" style={full ? { gridColumn: "1 / -1" } : {}}>
+    <div style={{ marginBottom: 10 }}><div className="disp" style={{ fontSize: 15, fontWeight: 600 }}>{title}</div><div style={{ fontSize: 12, color: C.faint }}>{subtitle}</div></div>{children}</Panel>);
+}
+function Stat({ label, value, unit, hl }) {
+  return (<Panel className="card" style={{ display: "flex", flexDirection: "column", justifyContent: "center", minHeight: 84 }}>
+    <span style={{ fontSize: 12, color: C.muted }}>{label}</span>
+    <div style={{ display: "flex", alignItems: "baseline", gap: 4, marginTop: 4 }}><span className="mono" style={{ fontSize: 24, fontWeight: 700, color: hl ? C.gold : C.text }}>{value}</span>{unit && <span style={{ fontSize: 12, color: C.faint }}>{unit}</span>}</div></Panel>);
+}
+function Tile({ label, unit, value, color, delta, good, data, dec }) {
+  const positive = good === "up" ? delta >= 0 : delta <= 0; const arrow = Math.abs(delta) < 0.05 ? "→" : delta > 0 ? "▲" : "▼";
+  const dColor = Math.abs(delta) < 0.05 ? C.faint : positive ? C.recovery : C.danger;
+  return (<Panel className="card" style={{ display: "flex", flexDirection: "column", justifyContent: "space-between", minHeight: 116 }}>
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}><span style={{ fontSize: 12, color: C.muted }}>{label}</span><span className="mono" style={{ fontSize: 11, color: dColor }}>{arrow} {Math.abs(delta).toFixed(dec ? 1 : 0)}</span></div>
+    <div style={{ display: "flex", alignItems: "baseline", gap: 4 }}><span className="mono" style={{ fontSize: 26, fontWeight: 700, lineHeight: 1 }}>{value}</span><span style={{ fontSize: 12, color: C.faint }}>{unit}</span></div>
+    <ResponsiveContainer width="100%" height={26}><LineChart data={data.map((y, x) => ({ x, y }))}><Line type="monotone" dataKey="y" stroke={color} strokeWidth={1.5} dot={false} /></LineChart></ResponsiveContainer></Panel>);
+}
+function Gauge({ value }) {
+  const R = 70, circ = 2 * Math.PI * R, off = circ - value / 100 * circ; const col = value >= 70 ? C.recovery : value >= 45 ? C.gold : C.danger;
+  return (<div style={{ position: "relative", width: 168, height: 168 }}>
+    <svg width="168" height="168" style={{ transform: "rotate(-90deg)" }}><circle cx="84" cy="84" r={R} fill="none" stroke={C.lineSoft} strokeWidth="11" /><circle cx="84" cy="84" r={R} fill="none" stroke={col} strokeWidth="11" strokeLinecap="round" strokeDasharray={circ} strokeDashoffset={off} style={{ transition: "stroke-dashoffset 1s ease" }} /></svg>
+    <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}><span className="mono" style={{ fontSize: 42, fontWeight: 700, lineHeight: 1 }}>{value}</span><span style={{ fontSize: 10, color: C.muted, letterSpacing: 2, marginTop: 4, textTransform: "uppercase" }}>Readiness</span></div></div>);
+}
+function Ring({ value, color, center, size = 130 }) {
+  const r = size / 2 - 9, circ = 2 * Math.PI * r;
+  return (<div style={{ position: "relative", width: size, height: size, flexShrink: 0 }}>
+    <svg width={size} height={size} style={{ transform: "rotate(-90deg)" }}><circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={C.lineSoft} strokeWidth="11" /><circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={color} strokeWidth="11" strokeLinecap="round" strokeDasharray={circ} strokeDashoffset={circ * (1 - value / 100)} style={{ transition: "stroke-dashoffset .6s" }} /></svg>
+    <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>{center}</div></div>);
+}
+function Segmented({ value, setValue, options }) {
+  return (<div style={{ display: "flex", gap: 3, background: C.panel, border: `1px solid ${C.line}`, borderRadius: 10, padding: 3, marginBottom: 14 }}>
+    {options.map(([id, label]) => (<button key={id} onClick={() => setValue(id)} style={{ flex: 1, padding: "8px 6px", borderRadius: 7, border: "none", cursor: "pointer", fontSize: 13, fontWeight: value === id ? 600 : 400, background: value === id ? C.panel2 : "transparent", color: value === id ? C.gold : C.muted }}>{label}</button>))}</div>);
+}
+function Chips({ items, sel, setSel, extra }) {
+  return (<div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+    {items.map((ex) => (<button key={ex} onClick={() => setSel(ex)} style={{ background: sel === ex ? C.panel2 : "transparent", border: `1px solid ${sel === ex ? C.gold : C.line}`, color: sel === ex ? C.gold : C.muted, padding: "7px 13px", borderRadius: 8, fontSize: 13, cursor: "pointer" }}>{ex}</button>))}{extra}</div>);
+}
+function RangeSel({ range, setRange }) {
+  return (<div style={{ display: "flex", gap: 4, marginBottom: 12, justifyContent: "flex-end" }}>{[7, 30, 60].map((r) => (<button key={r} onClick={() => setRange(r)} style={{ background: range === r ? C.panel2 : "transparent", border: `1px solid ${range === r ? C.gold : C.line}`, color: range === r ? C.gold : C.muted, padding: "6px 14px", borderRadius: 8, fontSize: 12, cursor: "pointer", fontFamily: "'JetBrains Mono',monospace" }}>{r} j</button>))}</div>);
+}
+const ListTitle = ({ children }) => <h3 className="disp" style={{ fontSize: 14, margin: "18px 0 10px", color: C.muted }}>{children}</h3>;
+function Empty({ text }) { return <Panel style={{ textAlign: "center", color: C.faint, padding: 30, fontSize: 13 }}>{text}</Panel>; }
+function Overlay({ children, onClose }) {
+  return (<div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(5,7,11,0.72)", display: "flex", alignItems: "center", justifyContent: "center", padding: 16, zIndex: 60, animation: "fade .2s ease" }}>
+    <div onClick={(e) => e.stopPropagation()} style={{ background: C.panel, border: `1px solid ${C.line}`, borderRadius: 16, padding: 22, width: "100%", maxWidth: 440, maxHeight: "88vh", overflowY: "auto" }}>{children}</div></div>);
+}
+const ModalTitle = ({ children }) => <div className="disp" style={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}>{children}</div>;
+const Field = ({ label, children }) => <div style={{ marginBottom: 12 }}><label style={{ fontSize: 12, color: C.muted, display: "block", marginBottom: 5 }}>{label}</label>{children}</div>;
+const ModalActions = ({ onClose, onSave }) => (<div style={{ display: "flex", gap: 8, marginTop: 8, justifyContent: "flex-end" }}><button className="btn" onClick={onClose} style={btnStyle}>Annuler</button><button className="btn" onClick={onSave} style={btnPrimary}>Enregistrer</button></div>);
+function NavIcon({ id, active }) {
+  const c = active ? C.gold : C.faint; const p = { width: 20, height: 20, fill: "none", stroke: c, strokeWidth: 1.8, strokeLinecap: "round", strokeLinejoin: "round" };
+  const paths = {
+    dashboard: <><rect x="3" y="3" width="7" height="9" rx="1" /><rect x="14" y="3" width="7" height="5" rx="1" /><rect x="14" y="12" width="7" height="9" rx="1" /><rect x="3" y="16" width="7" height="5" rx="1" /></>,
+    training: <><path d="M4 8v8M20 8v8M7 6v12M17 6v12M7 12h10" /></>,
+    nutrition: <><path d="M5 3v18M5 9h4M9 3v18M19 3c-1.5 0-3 1.5-3 5s1.5 5 3 5v8" /></>,
+    supps: <><rect x="3" y="9" width="18" height="6" rx="3" transform="rotate(45 12 12)" /><path d="M8.5 8.5l7 7" /></>,
+    sources: <><path d="M12 3v6m0 6v6M5.6 5.6l4.2 4.2m4.4 4.4l4.2 4.2M3 12h6m6 0h6" /><circle cx="12" cy="12" r="2.5" /></>,
+  };
+  return <svg viewBox="0 0 24 24" style={p}>{paths[id]}</svg>;
+}
+const btnStyle = { background: C.panel, border: `1px solid ${C.line}`, color: C.text, padding: "9px 14px", borderRadius: 9, fontSize: 13, fontWeight: 500, cursor: "pointer" };
+const btnPrimary = { ...btnStyle, background: C.gold, color: C.bg, borderColor: C.gold, fontWeight: 600 };
+const delBtn = { background: "none", border: "none", color: C.faint, cursor: "pointer", fontSize: 14, padding: 4 };
+const inp = { width: "100%", background: C.panel2, border: `1px solid ${C.line}`, color: C.text, borderRadius: 8, padding: "9px 11px", fontSize: 14, fontFamily: "'JetBrains Mono',monospace", outline: "none" };
+const mg = { top: 8, right: 8, left: -18, bottom: 0 };
+const axisP = { stroke: C.faint, tick: { fill: C.faint, fontSize: 11, fontFamily: "JetBrains Mono" }, tickLine: false, axisLine: false, width: 40 };
+const tipStyle = { background: C.panel2, border: `1px solid ${C.line}`, borderRadius: 10, fontSize: 12, fontFamily: "Inter" };
+const Grid = () => <CartesianGrid stroke={C.lineSoft} strokeDasharray="2 4" vertical={false} />;
+const Xaxis = (d) => <XAxis dataKey="date" tickFormatter={fmtDate} stroke={C.faint} tick={{ fill: C.faint, fontSize: 10, fontFamily: "JetBrains Mono" }} tickLine={false} axisLine={false} minTickGap={26} interval={Math.max(0, Math.floor(d.length / 7))} />;
+const Tip = () => <Tooltip contentStyle={tipStyle} labelStyle={{ color: C.gold, fontFamily: "JetBrains Mono", fontSize: 11 }} labelFormatter={fmtDate} />;
+function Styles() {
+  return <style>{`
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@500;700&display=swap');
+    * { box-sizing: border-box; } body { margin: 0; }
+    ::-webkit-scrollbar { height: 7px; width: 7px; } ::-webkit-scrollbar-thumb { background: ${C.line}; border-radius: 4px; }
+    .mono { font-family: 'JetBrains Mono', monospace; } .disp { font-family: 'Space Grotesk', sans-serif; }
+    select option { background: ${C.panel2}; }
+    @keyframes fade { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+    .card { animation: fade .4s ease both; }
+    .btn { transition: all .15s ease; } .btn:hover { filter: brightness(1.08); }
+    @media (max-width: 700px) { .rtop { grid-template-columns: 1fr !important; } }
+    @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+  `}</style>;
+}
+
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App />);
+
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", function () {
+    navigator.serviceWorker.register("sw.js").catch(function () {});
+  });
+}
+</script>
+</body>
+</html>
