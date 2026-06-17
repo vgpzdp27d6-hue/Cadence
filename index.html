@@ -236,6 +236,9 @@ function genDemo() {
     ];
     return { daily, sessions, lifts, vbt, tasks, study, events, settings: { kcalGoal: KCAL_GOAL, protGoal: PROT_GOAL, waterGoal: WATER_GOAL } };
 }
+function genEmpty() {
+    return { daily: {}, sessions: [], lifts: [], vbt: [], tasks: [], study: [], events: [], settings: { kcalGoal: KCAL_GOAL, protGoal: PROT_GOAL, waterGoal: WATER_GOAL } };
+}
 const DEFAULT_SUPPS = [
     { id: "whey", name: "Whey", color: "#E5B567" }, { id: "creatine", name: "Créatine", color: "#34D399" },
     { id: "omega3", name: "Oméga-3", color: "#22D3EE" }, { id: "vitD", name: "Vitamine D", color: "#FBBF24" },
@@ -805,7 +808,9 @@ function Sources({ state, setState, setSuppDefs }) {
         a.click();
         URL.revokeObjectURL(url);
     };
-    const reset = () => { if (confirm("Réinitialiser avec les données de démo ?"))
+    const reset = () => { if (confirm("Tout effacer ? Les fausses données (démo) seront supprimées. Tes connexions Whoop et Withings sont conservées — tu pourras re-synchroniser tes vraies données juste après."))
+        setState(genEmpty()); };
+    const loadDemo = () => { if (confirm("Recharger des données de démonstration ?"))
         setState(genDemo()); };
     const [imp, setImp] = useState(false);
     const applyImport = (kind, rows, map) => setState((s) => {
@@ -959,7 +964,8 @@ function Sources({ state, setState, setSuppDefs }) {
                 "Restaurer",
                 React.createElement("input", { type: "file", accept: "application/json", onChange: restore, style: { display: "none" } })),
             React.createElement("button", { className: "btn", onClick: exportCSV, style: btnStyle }, "Export CSV"),
-            React.createElement("button", { className: "btn", onClick: reset, style: { ...btnStyle, color: C.danger, borderColor: C.danger + "55" } }, "R\u00E9initialiser")),
+            React.createElement("button", { className: "btn", onClick: loadDemo, style: btnStyle }, "Donn\u00E9es d\u00E9mo"),
+            React.createElement("button", { className: "btn", onClick: reset, style: { ...btnStyle, color: C.danger, borderColor: C.danger + "55" } }, "Tout effacer")),
         React.createElement("p", { style: { fontSize: 11.5, color: C.faint, marginTop: 14, lineHeight: 1.6 } }, "Note iOS : une fois ajout\u00E9e \u00E0 l'\u00E9cran d'accueil, l'app fonctionne hors-ligne. iOS peut vider le stockage apr\u00E8s ~7 jours sans ouvrir l'app : pense \u00E0 \\\"Sauvegarder (fichier)\\\" de temps en temps, et \\\"Restaurer\\\" si besoin."),
         imp && React.createElement(ImportModal, { onClose: () => setImp(false), onImport: (t, rows, map) => { applyImport(t, rows, map); setImp(false); alert("Import terminé : " + rows.length + " lignes traitées."); } })));
 }
@@ -1274,7 +1280,6 @@ function Styles() {
 }
 const _root = createRoot(document.getElementById("root"));
 _root.render(React.createElement(App, null));
-
 </script>
 </body>
 </html>
