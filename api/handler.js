@@ -16,7 +16,7 @@ async function whoopLogin(req, res, host) {
     client_id: process.env.WHOOP_CLIENT_ID || "",
     redirect_uri: redirect,
     scope: "offline read:recovery read:sleep read:cycles read:profile",
-    state: "cadence"
+    state: "cadence01"
   });
   res.statusCode = 302;
   res.setHeader("Location", "https://api.prod.whoop.com/oauth/oauth2/auth?" + p.toString());
