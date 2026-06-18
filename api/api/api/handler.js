@@ -1,6 +1,40 @@
 // Cadence — UN SEUL fichier pour tout : Whoop & Withings (login, callback, sync)
 // À placer sur GitHub sous le nom : api/[...path].js
 
+function kvCreds() {
+  const url = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL || "";
+  const tok = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN || "";
+  return { url: url.replace(/\/+$/, ""), tok };
+}
+async function kvCmd(cmd) {
+  const { url, tok } = kvCreds();
+  if (!url || !tok) throw new Error("stockage non configuré");
+  const r = await fetch(url, { method: "POST", headers: { Authorization: "Bearer " + tok, "Content-Type": "application/json" }, body: JSON.stringify(cmd) });
+  const j = await r.json();
+  return j.result;
+}
+function cleanCode(c) { return String(c || "").replace(/[^a-zA-Z0-9]/g, "").slice(0, 24); }
+async function syncPush(req, res) {
+  res.setHeader("Content-Type", "application/json");
+  try {
+    const b = await readBody(req); const code = cleanCode(b.code);
+    if (code.length < 6) { res.statusCode = 400; return res.end(JSON.stringify({ error: "code invalide" })); }
+    if (typeof b.blob !== "string") { res.statusCode = 400; return res.end(JSON.stringify({ error: "blob manquant" })); }
+    await kvCmd(["SET", "cadence:sync:" + code, b.blob]);
+    res.statusCode = 200; res.end(JSON.stringify({ ok: true }));
+  } catch (e) { res.statusCode = 500; res.end(JSON.stringify({ error: String((e && e.message) || e) })); }
+}
+async function syncPull(req, res, url) {
+  res.setHeader("Content-Type", "application/json");
+  try {
+    let code = cleanCode(url.searchParams.get("code"));
+    if (!code) { const b = await readBody(req); code = cleanCode(b.code); }
+    if (code.length < 6) { res.statusCode = 400; return res.end(JSON.stringify({ error: "code invalide" })); }
+    const val = await kvCmd(["GET", "cadence:sync:" + code]);
+    res.statusCode = 200; res.end(JSON.stringify({ blob: val || null }));
+  } catch (e) { res.statusCode = 500; res.end(JSON.stringify({ error: String((e && e.message) || e) })); }
+}
+
 function readBody(req) {
   return new Promise(function (resolve) {
     var d = "";
@@ -16,7 +50,7 @@ async function whoopLogin(req, res, host) {
     client_id: process.env.WHOOP_CLIENT_ID || "",
     redirect_uri: redirect,
     scope: "offline read:recovery read:sleep read:cycles read:profile",
-    state: "cadence"
+    state: "cadence01"
   });
   res.statusCode = 302;
   res.setHeader("Location", "https://api.prod.whoop.com/oauth/oauth2/auth?" + p.toString());
@@ -97,7 +131,7 @@ async function withingsLogin(req, res, host) {
   const redirect = "https://" + host + "/api/withings-callback";
   const p = new URLSearchParams({
     response_type: "code", client_id: process.env.WITHINGS_CLIENT_ID || "",
-    scope: "user.metrics", redirect_uri: redirect, state: "cadence"
+    scope: "user.metrics", redirect_uri: redirect, state: "cadence01"
   });
   res.statusCode = 302;
   res.setHeader("Location", "https://account.withings.com/oauth2_user/authorize2?" + p.toString());
@@ -181,5 +215,7 @@ module.exports = async function (req, res) {
   if (path === "withings-login") return withingsLogin(req, res, host);
   if (path === "withings-callback") return withingsCallback(req, res, host, url);
   if (path === "withings-sync") return withingsSync(req, res, host, url);
+  if (path === "sync-push") return syncPush(req, res);
+  if (path === "sync-pull") return syncPull(req, res, url);
   res.statusCode = 404; res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify({ error: "route inconnue: " + path }));
 };
